@@ -333,7 +333,8 @@ public unsafe class BRG_Debris : MonoBehaviour
         PhysicsUpdateJob myJob = new PhysicsUpdateJob()
         {
             _gfxItems = m_gfxItems,
-            _backgroundItems = backgroundItems,
+			_maxInstancePerWindow = sysmemBuffer.Length,
+			_backgroundItems = backgroundItems,
             _sliceId = sliceId,
             _w = w,
             _h = h,

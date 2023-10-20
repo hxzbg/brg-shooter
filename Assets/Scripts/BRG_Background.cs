@@ -236,10 +236,12 @@ public unsafe class BRG_Background : MonoBehaviour
     [BurstCompile]
     JobHandle UpdatePositions(float smoothScroll, float dt, JobHandle jobFence)
     {
-        UpdatePositionsJob myJob = new UpdatePositionsJob()
+        var sysmemBuffer = m_brgContainer.GetMatrices(0);
+		UpdatePositionsJob myJob = new UpdatePositionsJob()
         {
-            _sysmemBuffer = m_brgContainer.GetMatrices(0),
-            backgroundItems = m_backgroundItems,
+            _maxInstancePerWindow = sysmemBuffer.Length,
+			_sysmemBuffer = sysmemBuffer,
+			backgroundItems = m_backgroundItems,
             smoothScroll = smoothScroll,
             slicePos = (int)m_slicePos,
             backgroundW = m_backgroundW,

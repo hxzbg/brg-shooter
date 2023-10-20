@@ -46,8 +46,8 @@ public unsafe class BRG_Container
         m_instanceCount = 0;
         m_maxInstances = maxInstances;
         m_castShadows = castShadows;
-
-        m_batchIDs = new int[m_windowCount];
+        m_windowCount = 1;
+		m_batchIDs = new int[m_windowCount];
         for (int b = 0; b < m_windowCount; b++)
         {
             m_batchIDs[b] = m_BatchRendererGroup.AddBatch(
