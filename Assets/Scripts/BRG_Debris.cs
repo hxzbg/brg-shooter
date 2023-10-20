@@ -219,7 +219,7 @@ public unsafe class BRG_Debris : MonoBehaviour
         [NativeDisableParallelForRestriction]
         public NativeArray<GfxItem> _gfxItems;
         [NativeDisableParallelForRestriction] [WriteOnly]
-        public NativeArray<float4> _sysmemBuffer;
+        public NativeArray<Matrix4x4> _sysmemBuffer;
         [NativeDisableParallelForRestriction]
         [ReadOnly]
         public NativeArray<BRG_Background.BackgroundItem> _backgroundItems;
@@ -244,24 +244,10 @@ public unsafe class BRG_Debris : MonoBehaviour
         {
             int i;
             int windowId = System.Math.DivRem(index, _maxInstancePerWindow, out i);
-
             int windowOffsetInFloat4 = windowId * _windowSizeInFloat4;
             Vector3 bpos = item.pos;
             float3x3 rot = item.mat;
-
-            // compute the new current frame matrix
-            _sysmemBuffer[(windowOffsetInFloat4 + i * 3 + 0)] = new float4(rot.c0.x, rot.c0.y, rot.c0.z, rot.c1.x);
-            _sysmemBuffer[(windowOffsetInFloat4 + i * 3 + 1)] = new float4(rot.c1.y, rot.c1.z, rot.c2.x, rot.c2.y);
-            _sysmemBuffer[(windowOffsetInFloat4 + i * 3 + 2)] = new float4(rot.c2.z, bpos.x, bpos.y, bpos.z);
-
-            // compute the new inverse matrix
-            _sysmemBuffer[(windowOffsetInFloat4 + _maxInstancePerWindow * 3 * 1 + i * 3 + 0)] = new float4(rot.c0.x, rot.c1.x, rot.c2.x, rot.c0.y);
-            _sysmemBuffer[(windowOffsetInFloat4 + _maxInstancePerWindow * 3 * 1 + i * 3 + 1)] = new float4(rot.c1.y, rot.c2.y, rot.c0.z, rot.c1.z);
-            _sysmemBuffer[(windowOffsetInFloat4 + _maxInstancePerWindow * 3 * 1 + i * 3 + 2)] = new float4(rot.c2.z, -bpos.x, -bpos.y, -bpos.z);
-
-            // update colors
-            _sysmemBuffer[windowOffsetInFloat4 + _maxInstancePerWindow * 3 * 2 + i] = new float4(item.color, 1);
-
+            _sysmemBuffer[windowId] = Matrix4x4.TRS(new Vector3(bpos.x, bpos.y, bpos.z), quaternion.identity, Vector3.one);
         }
 
         public void Execute(int index)
@@ -333,9 +319,6 @@ public unsafe class BRG_Debris : MonoBehaviour
             }
 
             _gfxItems[index] = item;
-
-
-
         }
     }
 
@@ -346,12 +329,7 @@ public unsafe class BRG_Debris : MonoBehaviour
         m_inOutCounters[kJustDeadCounter] = 0;
 
         JobHandle jobFence = new JobHandle();
-
-        // First, enqueue debris physics job (gravity, collision with ground cells, updating "just landed" or "just die" lists)
-        int totalGpuBufferSize;
-        int alignedWindowSize;
-        NativeArray<float4> sysmemBuffer = m_brgContainer.GetSysmemBuffer(out totalGpuBufferSize, out alignedWindowSize);
-
+        NativeArray<Matrix4x4> sysmemBuffer = m_brgContainer.GetMatrices(0);
         PhysicsUpdateJob myJob = new PhysicsUpdateJob()
         {
             _gfxItems = m_gfxItems,
@@ -366,8 +344,6 @@ public unsafe class BRG_Debris : MonoBehaviour
             _justLandedList = m_justLandedList,
             _justDeadList = m_justDeadList,
             _sysmemBuffer = sysmemBuffer,
-            _maxInstancePerWindow = alignedWindowSize / kDebrisGpuSize,
-            _windowSizeInFloat4 = alignedWindowSize / 16,
             _rnd = m_rndGen
         };
 

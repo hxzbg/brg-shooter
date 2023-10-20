@@ -168,7 +168,7 @@ public unsafe class BRG_Background : MonoBehaviour
         {
             QualitySettings.vSyncCount = 0;
             Application.targetFrameRate = 300;
-            Screen.SetResolution(1280, 720, FullScreenMode.ExclusiveFullScreen, new RefreshRate() { numerator = 60, denominator = 1 });
+            Screen.SetResolution(1280, 720, FullScreenMode.ExclusiveFullScreen);
         }
     }
 
@@ -177,7 +177,7 @@ public unsafe class BRG_Background : MonoBehaviour
     {
         [WriteOnly]
         [NativeDisableParallelForRestriction]
-        public NativeArray<float4> _sysmemBuffer;
+        public NativeArray<Matrix4x4> _sysmemBuffer;
 
         [NativeDisableParallelForRestriction]
         public NativeArray<BackgroundItem> backgroundItems;
@@ -189,14 +189,12 @@ public unsafe class BRG_Background : MonoBehaviour
         public float _dt;
         public float _phaseSpeed;
         public int _maxInstancePerWindow;
-        public int _windowSizeInFloat4;
 
         public void Execute(int sliceIndex)
         {
             int slice = (int)((sliceIndex+slicePos) % backgroundH);
             float pz = -smoothScroll + (float)sliceIndex;
             float phaseSpeed = _phaseSpeed * _dt;
-
 
             for (int x = 0; x < backgroundW; x++)
             {
@@ -230,48 +228,24 @@ public unsafe class BRG_Background : MonoBehaviour
 
                 int i;
                 int windowId = System.Math.DivRem(slice * backgroundW + x, _maxInstancePerWindow, out i);
-                int windowOffsetInFloat4 = windowId * _windowSizeInFloat4;
-
-                // compute the new current frame matrix
-                _sysmemBuffer[(windowOffsetInFloat4 + i * 3 + 0)] = new float4(1, 0, 0, 0);
-                _sysmemBuffer[(windowOffsetInFloat4 + i * 3 + 1)] = new float4(scaleY, 0, 0, 0);
-                _sysmemBuffer[(windowOffsetInFloat4 + i * 3 + 2)] = new float4(1, bpos.x, bpos.y, pz);
-
-                // compute the new inverse matrix (note: shortcut use identity because aligned cubes normals aren't affected by any non uniform scale
-                _sysmemBuffer[(windowOffsetInFloat4 + _maxInstancePerWindow * 3 * 1 + i * 3 + 0)] = new float4(1, 0, 0, 0);
-                _sysmemBuffer[(windowOffsetInFloat4 + _maxInstancePerWindow * 3 * 1 + i * 3 + 1)] = new float4(1, 0, 0, 0);
-                _sysmemBuffer[(windowOffsetInFloat4 + _maxInstancePerWindow * 3 * 1 + i * 3 + 2)] = new float4(1, 0, 0, 0);
-                item.flashTime -= _dt * 1.0f;     // 1 second white flash
-
-                // update colors
-                _sysmemBuffer[windowOffsetInFloat4 + _maxInstancePerWindow * 3 * 2 + i] = color;
-
-                backgroundItems[itemId] = item;
-
+                _sysmemBuffer[windowId] = Matrix4x4.TRS(new Vector3(bpos.x, bpos.y, pz), quaternion.identity, new Vector3(1, scaleY, 1));
             }
         }
     }
 
-
     [BurstCompile]
     JobHandle UpdatePositions(float smoothScroll, float dt, JobHandle jobFence)
     {
-        int totalGpuBufferSize;
-        int alignedWindowSize;
-        NativeArray<float4> sysmemBuffer = m_brgContainer.GetSysmemBuffer(out totalGpuBufferSize, out alignedWindowSize);
-
         UpdatePositionsJob myJob = new UpdatePositionsJob()
         {
-            _sysmemBuffer = sysmemBuffer,
+            _sysmemBuffer = m_brgContainer.GetMatrices(0),
             backgroundItems = m_backgroundItems,
             smoothScroll = smoothScroll,
             slicePos = (int)m_slicePos,
             backgroundW = m_backgroundW,
             backgroundH = m_backgroundH,
             _dt = dt,
-            _phaseSpeed = m_phaseSpeed1,
-            _maxInstancePerWindow = alignedWindowSize / kGpuItemSize,
-            _windowSizeInFloat4 = alignedWindowSize / 16,
+            _phaseSpeed = m_phaseSpeed1
         };
         jobFence = myJob.ScheduleParallel(m_backgroundH, 4, jobFence);      // 4 slices per job
         return jobFence;
