@@ -418,7 +418,7 @@ public unsafe class BRG_Debris : MonoBehaviour
 
     public void UploadGpuData()
     {
-        //m_brgContainer.UploadGpuData(m_inOutCounters[kGpuItemsCounter]);
+        m_brgContainer.UploadGpuData(m_inOutCounters[kGpuItemsCounter]);
     }
 
     private void OnDestroy()
