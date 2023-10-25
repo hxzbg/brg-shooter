@@ -5,9 +5,18 @@ using Unity.Jobs;
 using UnityEngine;
 using Unity.Profiling;
 using System.Collections.Generic;
+using Unity.Entities;
+using Unity.Entities.CodeGeneratedJobForEach;
+using Unity.Transforms;
+using System.Linq;
 
 public unsafe class BRG_Background : MonoBehaviour
 {
+    struct BackGroundTag : IComponentData
+    {
+
+    }
+
     public static BRG_Background gBackgroundManager;
 
     public Mesh m_mesh;
@@ -26,10 +35,14 @@ public unsafe class BRG_Background : MonoBehaviour
     public int m_backgroundH = 100;
     private const int kGpuItemSize = (3 * 2 + 1) * 16;  //  GPU item size ( 2 * 4x3 matrices plus 1 color per item )
 
-    private BRG_Container m_brgContainer;
-    private JobHandle m_updateJobFence;
+	private EntityQuery m_EntityQuery;
+	private JobHandle m_updateJobFence;
+	private EntityManager m_EntityManager;
+	private NativeArray<Entity> m_Entities;
+	private NativeList<LocalToWorld> m_Translation;
+    private NativeList<MaterialBaseColor> m_BaseColors;
 
-    private List<int> m_magnetCells = new List<int>();
+	private List<int> m_magnetCells = new List<int>();
 
     private int m_itemCount;
     private float m_phase = 0.0f;
@@ -89,7 +102,6 @@ public unsafe class BRG_Background : MonoBehaviour
     [BurstCompile]
     private void InjectNewSlice()
     {
-
         m_slicePos++;
 
         int sPos0 = (int)((m_slicePos+ m_backgroundH-1) % m_backgroundH);
@@ -145,24 +157,32 @@ public unsafe class BRG_Background : MonoBehaviour
         }
     }
 
-
     // Start is called before the first frame update
     void Start()
     {
-
         m_itemCount = m_backgroundW*m_backgroundH;
-        
-        m_brgContainer = new BRG_Container();
-        m_brgContainer.Init(m_mesh, m_material, m_itemCount, kGpuItemSize, m_castShadows);
+        Color color = m_material.GetColor("_BaseColor");
+        float4 c = new float4(color.r, color.g, color.b, color.a);
+		m_EntityManager = World.DefaultGameObjectInjectionWorld.EntityManager;
+		m_EntityQuery = ECS_Container.CreateEntityQuery(ComponentType.ReadOnly<BackGroundTag>(), ComponentType.ReadWrite<MaterialBaseColor>(), ComponentType.ReadWrite<LocalToWorld>());
+		var entities = ECS_Container.CreateEntitys(m_mesh, m_material, m_itemCount, m_castShadows);
+        m_Entities = new NativeArray<Entity>(entities, Allocator.Persistent);
 
-        // setup positions & scale of each background elements
-        m_backgroundItems = new NativeArray<BackgroundItem>(m_itemCount, Allocator.Persistent, NativeArrayOptions.ClearMemory);
+        for(int i = 0; i < m_Entities.Length; i++)
+        {
+			m_EntityManager.AddComponent(m_Entities[i], typeof(BackGroundTag));
+			m_EntityManager.AddComponentData(m_Entities[i], new MaterialBaseColor { Value = c });
+		}
+		entities.Dispose();
+
+		// setup positions & scale of each background elements
+		m_backgroundItems = new NativeArray<BackgroundItem>(m_itemCount, Allocator.Persistent, NativeArrayOptions.ClearMemory);
 
         // fill a complete background buffer
         for (int i = 0; i < m_backgroundH; i++)
             InjectNewSlice();
 
-        m_brgContainer.UploadGpuData(m_itemCount);
+        //m_brgContainer.UploadGpuData(m_itemCount);
 
         if (Application.platform == RuntimePlatform.Android)
         {
@@ -177,7 +197,10 @@ public unsafe class BRG_Background : MonoBehaviour
     {
         [WriteOnly]
         [NativeDisableParallelForRestriction]
-        public NativeArray<float4> _sysmemBuffer;
+        public NativeList<LocalToWorld> translation;
+		[WriteOnly]
+		[NativeDisableParallelForRestriction]
+		public NativeList<MaterialBaseColor> baseColors;
 
         [NativeDisableParallelForRestriction]
         public NativeArray<BackgroundItem> backgroundItems;
@@ -188,8 +211,6 @@ public unsafe class BRG_Background : MonoBehaviour
         public int backgroundH;
         public float _dt;
         public float _phaseSpeed;
-        public int _maxInstancePerWindow;
-        public int _windowSizeInFloat4;
 
         public void Execute(int sliceIndex)
         {
@@ -228,26 +249,16 @@ public unsafe class BRG_Background : MonoBehaviour
                 float phaseInc = (item.weight <= 0) ? phaseSpeed : phaseSpeed * 0.3f;
                 item.phase += phaseInc;
 
-                int i;
-                int windowId = System.Math.DivRem(slice * backgroundW + x, _maxInstancePerWindow, out i);
-                int windowOffsetInFloat4 = windowId * _windowSizeInFloat4;
-
-                // compute the new current frame matrix
-                _sysmemBuffer[(windowOffsetInFloat4 + i * 3 + 0)] = new float4(1, 0, 0, 0);
-                _sysmemBuffer[(windowOffsetInFloat4 + i * 3 + 1)] = new float4(scaleY, 0, 0, 0);
-                _sysmemBuffer[(windowOffsetInFloat4 + i * 3 + 2)] = new float4(1, bpos.x, bpos.y, pz);
-
-                // compute the new inverse matrix (note: shortcut use identity because aligned cubes normals aren't affected by any non uniform scale
-                _sysmemBuffer[(windowOffsetInFloat4 + _maxInstancePerWindow * 3 * 1 + i * 3 + 0)] = new float4(1, 0, 0, 0);
-                _sysmemBuffer[(windowOffsetInFloat4 + _maxInstancePerWindow * 3 * 1 + i * 3 + 1)] = new float4(1, 0, 0, 0);
-                _sysmemBuffer[(windowOffsetInFloat4 + _maxInstancePerWindow * 3 * 1 + i * 3 + 2)] = new float4(1, 0, 0, 0);
+                float4x4 data = float4x4.identity;
+                data.c1 = new float4(0, scaleY, 0, 0);
+                data.c3 = new float4(bpos.x, bpos.y, pz, 1);
+				translation[itemId] = new LocalToWorld { Value = data };
                 item.flashTime -= _dt * 1.0f;     // 1 second white flash
 
                 // update colors
-                _sysmemBuffer[windowOffsetInFloat4 + _maxInstancePerWindow * 3 * 2 + i] = color;
+                baseColors[itemId] = new MaterialBaseColor { Value = color };
 
                 backgroundItems[itemId] = item;
-
             }
         }
     }
@@ -256,13 +267,13 @@ public unsafe class BRG_Background : MonoBehaviour
     [BurstCompile]
     JobHandle UpdatePositions(float smoothScroll, float dt, JobHandle jobFence)
     {
-        int totalGpuBufferSize;
-        int alignedWindowSize;
-        NativeArray<float4> sysmemBuffer = m_brgContainer.GetSysmemBuffer(out totalGpuBufferSize, out alignedWindowSize);
-
-        UpdatePositionsJob myJob = new UpdatePositionsJob()
+        m_Translation = m_EntityQuery.ToComponentDataListAsync<LocalToWorld>(Allocator.TempJob, out JobHandle outJobHandle1);
+		m_BaseColors = m_EntityQuery.ToComponentDataListAsync<MaterialBaseColor>(Allocator.TempJob, out JobHandle outJobHandle2);
+        jobFence = JobHandle.CombineDependencies(jobFence, outJobHandle1, outJobHandle2);
+		UpdatePositionsJob myJob = new UpdatePositionsJob()
         {
-            _sysmemBuffer = sysmemBuffer,
+			baseColors = m_BaseColors,
+			translation = m_Translation,
             backgroundItems = m_backgroundItems,
             smoothScroll = smoothScroll,
             slicePos = (int)m_slicePos,
@@ -270,8 +281,6 @@ public unsafe class BRG_Background : MonoBehaviour
             backgroundH = m_backgroundH,
             _dt = dt,
             _phaseSpeed = m_phaseSpeed1,
-            _maxInstancePerWindow = alignedWindowSize / kGpuItemSize,
-            _windowSizeInFloat4 = alignedWindowSize / 16,
         };
         jobFence = myJob.ScheduleParallel(m_backgroundH, 4, jobFence);      // 4 slices per job
         return jobFence;
@@ -344,13 +353,20 @@ public unsafe class BRG_Background : MonoBehaviour
 
     private void LateUpdate()
     {
-
         m_updateJobFence.Complete();
 
         // upload ground cells
         s_BackgroundGPUSetData.Begin();
-        m_brgContainer.UploadGpuData(m_itemCount);
-        s_BackgroundGPUSetData.End();
+		//m_brgContainer.UploadGpuData(m_itemCount);
+		for (int i = 0; i < m_Entities.Length; i ++)
+        {
+            Entity entity = m_Entities[i];
+			m_EntityManager.SetComponentData(entity, m_BaseColors[i]);
+			m_EntityManager.SetComponentData(entity, m_Translation[i]);
+		}
+        m_BaseColors.Dispose();
+        m_Translation.Dispose();
+		s_BackgroundGPUSetData.End();
 
 
         // upload debris GPU data
@@ -361,8 +377,12 @@ public unsafe class BRG_Background : MonoBehaviour
 
     private void OnDestroy()
     {
-        if ( m_brgContainer != null )
-            m_brgContainer.Shutdown();
+        //if ( m_brgContainer != null )
+        //    m_brgContainer.Shutdown();
         m_backgroundItems.Dispose();
+        if(m_Entities.Length > 0)
+        {
+            m_Entities.Dispose();
+		}
     }
 }
