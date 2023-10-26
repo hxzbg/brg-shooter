@@ -19,8 +19,8 @@ public partial class BRG_Background : MonoBehaviour
 
     struct ItemIndex : IComponentData
     {
-        public int x;
-        public int y;
+        public int W;
+        public int H;
     }
 
     public static BRG_Background gBackgroundManager;
@@ -184,7 +184,7 @@ public partial class BRG_Background : MonoBehaviour
         {
 			m_EntityManager.AddComponent(m_Entities[i], typeof(BackGroundTag));
 			m_EntityManager.AddComponentData(m_Entities[i], new MaterialBaseColor { Value = c });
-			m_EntityManager.AddComponentData(m_Entities[i], new ItemIndex { x = i % m_backgroundW, y = i / m_backgroundW });
+			m_EntityManager.AddComponentData(m_Entities[i], new ItemIndex { W = i % m_backgroundW, H = i / m_backgroundW });
 		}
 		entities.Dispose();
 
@@ -228,7 +228,8 @@ public partial class BRG_Background : MonoBehaviour
 
         public void Execute(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
         {
-            var itemIndexs = chunk.GetNativeArray(ref ItemIndexHandle);
+			float phaseSpeed = _phaseSpeed * _dt;
+			var itemIndexs = chunk.GetNativeArray(ref ItemIndexHandle);
 			var localToWorlds = chunk.GetNativeArray(ref LocalToWorldHandle);
 			var baseColors = chunk.GetNativeArray(ref MaterialBaseColorHandle);
             for(int i = 0; i < itemIndexs.Length; i ++)
@@ -237,11 +238,10 @@ public partial class BRG_Background : MonoBehaviour
 				var baseColor = baseColors[i];
 				var translation = localToWorlds[i];
 
-				int sliceIndex = index.y;
+				int sliceIndex = index.H;
 				int slice = (int)((sliceIndex + slicePos) % backgroundH);
 				float pz = -smoothScroll + (float)sliceIndex;
-				float phaseSpeed = _phaseSpeed * _dt;
-				int itemId = index.y * backgroundW + index.x;
+				int itemId = slice * backgroundW + index.W;
 				BackgroundItem item = backgroundItems[itemId];
 
 				float4 color = backgroundItems[itemId].color;
