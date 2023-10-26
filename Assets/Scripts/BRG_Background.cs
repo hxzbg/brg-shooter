@@ -8,13 +8,19 @@ using System.Collections.Generic;
 using Unity.Entities;
 using Unity.Entities.CodeGeneratedJobForEach;
 using Unity.Transforms;
-using System.Linq;
+using Unity.Burst.Intrinsics;
 
-public unsafe class BRG_Background : MonoBehaviour
+public partial class BRG_Background : MonoBehaviour
 {
     struct BackGroundTag : IComponentData
     {
 
+    }
+
+    struct ItemIndex : IComponentData
+    {
+        public int x;
+        public int y;
     }
 
     public static BRG_Background gBackgroundManager;
@@ -33,14 +39,14 @@ public unsafe class BRG_Background : MonoBehaviour
 
     public int m_backgroundW = 30;
     public int m_backgroundH = 100;
-    private const int kGpuItemSize = (3 * 2 + 1) * 16;  //  GPU item size ( 2 * 4x3 matrices plus 1 color per item )
 
 	private EntityQuery m_EntityQuery;
 	private JobHandle m_updateJobFence;
 	private EntityManager m_EntityManager;
 	private NativeArray<Entity> m_Entities;
-	private NativeList<LocalToWorld> m_Translation;
-    private NativeList<MaterialBaseColor> m_BaseColors;
+	ComponentTypeHandle<ItemIndex> ItemIndexHandle;
+	ComponentTypeHandle<LocalToWorld> LocalToWorldHandle;
+	ComponentTypeHandle<MaterialBaseColor> MaterialBaseColorHandle;
 
 	private List<int> m_magnetCells = new List<int>();
 
@@ -164,7 +170,13 @@ public unsafe class BRG_Background : MonoBehaviour
         Color color = m_material.GetColor("_BaseColor");
         float4 c = new float4(color.r, color.g, color.b, color.a);
 		m_EntityManager = World.DefaultGameObjectInjectionWorld.EntityManager;
-		m_EntityQuery = ECS_Container.CreateEntityQuery(ComponentType.ReadOnly<BackGroundTag>(), ComponentType.ReadWrite<MaterialBaseColor>(), ComponentType.ReadWrite<LocalToWorld>());
+		m_EntityQuery = ECS_Container.CreateEntityQuery(
+			ComponentType.ReadOnly<ItemIndex>(),
+			ComponentType.ReadOnly<BackGroundTag>(), 
+            ComponentType.ReadWrite<MaterialBaseColor>(), 
+            ComponentType.ReadWrite<LocalToWorld>()
+        );
+
 		var entities = ECS_Container.CreateEntitys(m_mesh, m_material, m_itemCount, m_castShadows);
         m_Entities = new NativeArray<Entity>(entities, Allocator.Persistent);
 
@@ -172,8 +184,13 @@ public unsafe class BRG_Background : MonoBehaviour
         {
 			m_EntityManager.AddComponent(m_Entities[i], typeof(BackGroundTag));
 			m_EntityManager.AddComponentData(m_Entities[i], new MaterialBaseColor { Value = c });
+			m_EntityManager.AddComponentData(m_Entities[i], new ItemIndex { x = i % m_backgroundW, y = i / m_backgroundW });
 		}
 		entities.Dispose();
+
+		ItemIndexHandle = m_EntityManager.GetComponentTypeHandle<ItemIndex>(false);
+		LocalToWorldHandle = m_EntityManager.GetComponentTypeHandle<LocalToWorld>(false);
+		MaterialBaseColorHandle = m_EntityManager.GetComponentTypeHandle<MaterialBaseColor>(false);
 
 		// setup positions & scale of each background elements
 		m_backgroundItems = new NativeArray<BackgroundItem>(m_itemCount, Allocator.Persistent, NativeArrayOptions.ClearMemory);
@@ -193,16 +210,13 @@ public unsafe class BRG_Background : MonoBehaviour
     }
 
     [BurstCompile]
-    private struct UpdatePositionsJob : IJobFor
-    {
-        [WriteOnly]
-        [NativeDisableParallelForRestriction]
-        public NativeList<LocalToWorld> translation;
-		[WriteOnly]
-		[NativeDisableParallelForRestriction]
-		public NativeList<MaterialBaseColor> baseColors;
+    private struct UpdatePositionsJob : IJobChunk
+	{
+		public ComponentTypeHandle<ItemIndex> ItemIndexHandle;
+		public ComponentTypeHandle<LocalToWorld> LocalToWorldHandle;
+		public ComponentTypeHandle<MaterialBaseColor> MaterialBaseColorHandle;
 
-        [NativeDisableParallelForRestriction]
+		[NativeDisableParallelForRestriction]
         public NativeArray<BackgroundItem> backgroundItems;
 
         public float smoothScroll;
@@ -212,79 +226,82 @@ public unsafe class BRG_Background : MonoBehaviour
         public float _dt;
         public float _phaseSpeed;
 
-        public void Execute(int sliceIndex)
+        public void Execute(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
         {
-            int slice = (int)((sliceIndex+slicePos) % backgroundH);
-            float pz = -smoothScroll + (float)sliceIndex;
-            float phaseSpeed = _phaseSpeed * _dt;
-
-
-            for (int x = 0; x < backgroundW; x++)
+            var itemIndexs = chunk.GetNativeArray(ref ItemIndexHandle);
+			var localToWorlds = chunk.GetNativeArray(ref LocalToWorldHandle);
+			var baseColors = chunk.GetNativeArray(ref MaterialBaseColorHandle);
+            for(int i = 0; i < itemIndexs.Length; i ++)
             {
-                int itemId = slice * backgroundW+x;
-                BackgroundItem item = backgroundItems[itemId];
+                var index = itemIndexs[i];
+				var baseColor = baseColors[i];
+				var translation = localToWorlds[i];
 
-                float4 color = backgroundItems[itemId].color;
-                if (item.flashTime > 0.0f)
-                {
-                    color = math.lerp(color, new float4(1, 1, 1, 1), item.flashTime);
-                }
+				int sliceIndex = index.y;
+				int slice = (int)((sliceIndex + slicePos) % backgroundH);
+				float pz = -smoothScroll + (float)sliceIndex;
+				float phaseSpeed = _phaseSpeed * _dt;
+				int itemId = index.y * backgroundW + index.x;
+				BackgroundItem item = backgroundItems[itemId];
 
-                float4 bpos;
-                float waveY = item.hInitial + 0.5f + math.sin(item.phase) * 0.5f;
-                float scaleY = waveY;
-                if (item.magnetIntensity > 0.0f)
-                {
-                    float alpha = Mathf.SmoothStep(0, 1, item.magnetIntensity);
-                    scaleY += alpha * 1.5f;
-                    color = math.lerp(color, color+new float4(1.0f,0.3f,0.3f,0), alpha);
-                    item.magnetIntensity -= _dt * 3.0f;
-                }
+				float4 color = backgroundItems[itemId].color;
+				if (item.flashTime > 0.0f)
+				{
+					color = math.lerp(color, new float4(1, 1, 1, 1), item.flashTime);
+				}
 
-                bpos.x = item.x;
-                bpos.y = scaleY * 0.5f;
+				float4 bpos;
+				float waveY = item.hInitial + 0.5f + math.sin(item.phase) * 0.5f;
+				float scaleY = waveY;
+				if (item.magnetIntensity > 0.0f)
+				{
+					float alpha = Mathf.SmoothStep(0, 1, item.magnetIntensity);
+					scaleY += alpha * 1.5f;
+					color = math.lerp(color, color + new float4(1.0f, 0.3f, 0.3f, 0), alpha);
+					item.magnetIntensity -= _dt * 3.0f;
+				}
 
-                item.h = scaleY;
+				bpos.x = item.x;
+				bpos.y = scaleY * 0.5f;
 
-                float phaseInc = (item.weight <= 0) ? phaseSpeed : phaseSpeed * 0.3f;
-                item.phase += phaseInc;
+				item.h = scaleY;
 
-                float4x4 data = float4x4.identity;
-                data.c1 = new float4(0, scaleY, 0, 0);
-                data.c3 = new float4(bpos.x, bpos.y, pz, 1);
-				translation[itemId] = new LocalToWorld { Value = data };
-                item.flashTime -= _dt * 1.0f;     // 1 second white flash
+				float phaseInc = (item.weight <= 0) ? phaseSpeed : phaseSpeed * 0.3f;
+				item.phase += phaseInc;
 
-                // update colors
-                baseColors[itemId] = new MaterialBaseColor { Value = color };
+				float4x4 data = float4x4.identity;
+				data.c1 = new float4(0, scaleY, 0, 0);
+				data.c3 = new float4(bpos.x, bpos.y, pz, 1);
+				translation.Value = data;
+                localToWorlds[i] = translation;
+				item.flashTime -= _dt * 1.0f;     // 1 second white flash
 
-                backgroundItems[itemId] = item;
-            }
-        }
+				// update colors
+				baseColor.Value = color;
+                baseColors[i] = baseColor;
+
+				backgroundItems[itemId] = item;
+			}
+		}
     }
-
 
     [BurstCompile]
     JobHandle UpdatePositions(float smoothScroll, float dt, JobHandle jobFence)
     {
-        m_Translation = m_EntityQuery.ToComponentDataListAsync<LocalToWorld>(Allocator.TempJob, out JobHandle outJobHandle1);
-		m_BaseColors = m_EntityQuery.ToComponentDataListAsync<MaterialBaseColor>(Allocator.TempJob, out JobHandle outJobHandle2);
-        jobFence = JobHandle.CombineDependencies(jobFence, outJobHandle1, outJobHandle2);
-		UpdatePositionsJob myJob = new UpdatePositionsJob()
+        return new UpdatePositionsJob()
         {
-			baseColors = m_BaseColors,
-			translation = m_Translation,
-            backgroundItems = m_backgroundItems,
+			ItemIndexHandle = this.ItemIndexHandle,
+		    LocalToWorldHandle = this.LocalToWorldHandle,
+		    MaterialBaseColorHandle = this.MaterialBaseColorHandle,
+		    backgroundItems = m_backgroundItems,
             smoothScroll = smoothScroll,
             slicePos = (int)m_slicePos,
             backgroundW = m_backgroundW,
             backgroundH = m_backgroundH,
             _dt = dt,
             _phaseSpeed = m_phaseSpeed1,
-        };
-        jobFence = myJob.ScheduleParallel(m_backgroundH, 4, jobFence);      // 4 slices per job
-        return jobFence;
-    }
+        }.ScheduleParallel(m_EntityQuery, jobFence);
+	}
 
     // Update is called once per frame
     void Update()
@@ -358,14 +375,6 @@ public unsafe class BRG_Background : MonoBehaviour
         // upload ground cells
         s_BackgroundGPUSetData.Begin();
 		//m_brgContainer.UploadGpuData(m_itemCount);
-		for (int i = 0; i < m_Entities.Length; i ++)
-        {
-            Entity entity = m_Entities[i];
-			m_EntityManager.SetComponentData(entity, m_BaseColors[i]);
-			m_EntityManager.SetComponentData(entity, m_Translation[i]);
-		}
-        m_BaseColors.Dispose();
-        m_Translation.Dispose();
 		s_BackgroundGPUSetData.End();
 
 
@@ -384,5 +393,5 @@ public unsafe class BRG_Background : MonoBehaviour
         {
             m_Entities.Dispose();
 		}
-    }
+	}
 }
