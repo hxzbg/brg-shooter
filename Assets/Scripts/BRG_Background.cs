@@ -1,14 +1,15 @@
+using System;
+using Unity.Jobs;
 using Unity.Burst;
+using UnityEngine;
+using Unity.Entities;
+using Unity.Profiling;
+using Unity.Transforms;
 using Unity.Mathematics;
 using Unity.Collections;
-using Unity.Jobs;
-using UnityEngine;
-using Unity.Profiling;
-using System.Collections.Generic;
-using Unity.Entities;
-using Unity.Entities.CodeGeneratedJobForEach;
-using Unity.Transforms;
 using Unity.Burst.Intrinsics;
+using System.Collections.Generic;
+using Unity.Collections.LowLevel.Unsafe;
 
 public partial class BRG_Background : MonoBehaviour
 {
@@ -210,7 +211,7 @@ public partial class BRG_Background : MonoBehaviour
     }
 
     [BurstCompile]
-    private struct UpdatePositionsJob : IJobChunk
+    private unsafe struct UpdatePositionsJob : IJobChunk
 	{
 		public ComponentTypeHandle<ItemIndex> ItemIndexHandle;
 		public ComponentTypeHandle<LocalToWorld> LocalToWorldHandle;
@@ -229,14 +230,14 @@ public partial class BRG_Background : MonoBehaviour
         public void Execute(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
         {
 			float phaseSpeed = _phaseSpeed * _dt;
-			var itemIndexs = chunk.GetNativeArray(ref ItemIndexHandle);
-			var localToWorlds = chunk.GetNativeArray(ref LocalToWorldHandle);
-			var baseColors = chunk.GetNativeArray(ref MaterialBaseColorHandle);
-            for(int i = 0; i < itemIndexs.Length; i ++)
+            var itemIndexPtr = (IntPtr)chunk.GetComponentDataPtrRO(ref ItemIndexHandle);
+			var localToWorldPtr = (IntPtr)chunk.GetComponentDataPtrRW(ref LocalToWorldHandle);
+			var baseColorPtr = (IntPtr)chunk.GetComponentDataPtrRW(ref MaterialBaseColorHandle);
+			for (int i = 0; i < chunk.Count; i ++)
             {
-                var index = itemIndexs[i];
-				var baseColor = baseColors[i];
-				var translation = localToWorlds[i];
+                ItemIndex index = UnsafeUtility.AsRef<ItemIndex>((ItemIndex*)itemIndexPtr + i);
+				ref MaterialBaseColor baseColor = ref UnsafeUtility.AsRef<MaterialBaseColor>((MaterialBaseColor*)baseColorPtr + i);
+				ref LocalToWorld translation = ref UnsafeUtility.AsRef<LocalToWorld>((LocalToWorld*)localToWorldPtr + i);
 
 				int sliceIndex = index.H;
 				int slice = (int)((sliceIndex + slicePos) % backgroundH);
@@ -273,15 +274,13 @@ public partial class BRG_Background : MonoBehaviour
 				data.c1 = new float4(0, scaleY, 0, 0);
 				data.c3 = new float4(bpos.x, bpos.y, pz, 1);
 				translation.Value = data;
-                localToWorlds[i] = translation;
 				item.flashTime -= _dt * 1.0f;     // 1 second white flash
 
 				// update colors
 				baseColor.Value = color;
-                baseColors[i] = baseColor;
 
 				backgroundItems[itemId] = item;
-			}
+            }
 		}
     }
 
